@@ -9,3 +9,4 @@ backend/training/merged_dataset.csv
 **/__pycache__/
 **/alembic/
 **/.env
+**/.DS_Store
