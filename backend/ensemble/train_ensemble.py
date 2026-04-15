@@ -1,7 +1,7 @@
 """
 Run from project root:
-    python3 -m backend.ensemble.train_ensemble \
-        --data backend/combined.jsonl \
+    python3 -m backend.ensemble.train_ensemble \  
+        --data backend/combined30k.jsonl \
         --out  backend/checkpoints/ensemble_xgb.json
 """
 import argparse, json, os
