@@ -19,11 +19,12 @@ Endpoints
   GET  /redoc               ReDoc UI
 """
 
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from signals.ml_signal import router as ml_router
-from api.routers import analyze, feedback, health
+from backend.signals.ml_signal import router as ml_router
+from backend.api.routers import analyze, feedback, health
 
 app = FastAPI(
     title="PolitiCheck API",
@@ -31,9 +32,13 @@ app = FastAPI(
     description="Credibility analysis API powered by RoBERTa, XGBoost, and external fact-checking.",
 )
 
+# CORS configuration from environment, with sensible defaults for development
+cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:5173").split(",")
+cors_origins = [origin.strip() for origin in cors_origins if origin.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "https://politicheck.com"],
+    allow_origins=cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )

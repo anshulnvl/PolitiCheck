@@ -3,7 +3,7 @@ from sqlalchemy import (
     DateTime, ForeignKey, JSON
 )
 from sqlalchemy.sql import func
-from database import Base
+from backend.pipeline.db import Base
 
 class User(Base):
     __tablename__ = "users"

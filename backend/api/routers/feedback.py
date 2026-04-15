@@ -18,7 +18,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 from sqlalchemy import Column, DateTime, String, Text
 
-from pipeline.db import Base, engine
+from backend.pipeline.db import Base, engine
 
 log = logging.getLogger(__name__)
 

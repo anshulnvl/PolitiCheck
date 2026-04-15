@@ -4,15 +4,24 @@ import httpx
 import asyncpg
 import whois
 import spacy
-nlp = spacy.load("en_core_web_sm")
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Dict, Any, Optional
+import logging
 
 nlp = spacy.load("en_core_web_sm")
 
+log = logging.getLogger(__name__)
+
 GOOGLE_KEY = os.getenv("GOOGLE_FACTCHECK_KEY", "")
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:pass@localhost/newsdb")
+# Use environment variable for external news database connection
+# Disable external fact-checking if not configured
+EXTERNAL_NEWS_DATABASE_URL = os.getenv("EXTERNAL_NEWS_DATABASE_URL")
+if not EXTERNAL_NEWS_DATABASE_URL:
+    log.warning(
+        "EXTERNAL_NEWS_DATABASE_URL not set. External fact-checking will be disabled. "
+        "Set env var to postgres://user:pass@host/db to enable."
+    )
 
 GOOGLE_FC_URL = "https://factchecktools.googleapis.com/v1alpha1/claims:search"
 
@@ -187,8 +196,15 @@ async def _source_reputation(domain: str) -> dict:
         return {"reputation_score": 0.5, "reputation_source": "no_domain"}
 
     # 1. Try PostgreSQL cache first
+    if not EXTERNAL_NEWS_DATABASE_URL:
+        return ExternalSignalResult(
+            score=0.5,
+            features={"fact_check_available": False},
+            error="External news database not configured"
+        )
+    
     try:
-        conn = await asyncpg.connect(DATABASE_URL)
+        conn = await asyncpg.connect(EXTERNAL_NEWS_DATABASE_URL)
         row = await conn.fetchrow(
             "SELECT newsguard_score, mbfc_rating, domain_age_days FROM source_reputation WHERE domain = $1",
             domain

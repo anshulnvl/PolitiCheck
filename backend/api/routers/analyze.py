@@ -27,7 +27,7 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from pipeline.orchestrator import run_pipeline
+from backend.pipeline.orchestrator import run_pipeline
 
 log = logging.getLogger(__name__)
 

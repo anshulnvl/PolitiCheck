@@ -25,7 +25,7 @@ from fastapi.responses import JSONResponse
 
 from pipeline.cache import REDIS_URL
 from pipeline.db import engine
-from signals.ml_signal import CHECKPOINT
+from backend.signals.ml_signal import CHECKPOINT
 
 router = APIRouter(prefix="/api", tags=["health"])
 
@@ -54,12 +54,19 @@ def health_check() -> JSONResponse:
         overall = "degraded"
 
     # ── ML model checkpoint ───────────────────────────────────────────────────
-    checkpoint_path = os.path.abspath(CHECKPOINT)
-    if os.path.isdir(checkpoint_path):
+    # Checkpoint is optional: if missing, health check warns but doesn't fail
+    checkpoint_optional = os.getenv("ML_CHECKPOINT_REQUIRED", "false").lower() == "true"
+    checkpoint_path = os.path.abspath(CHECKPOINT) if CHECKPOINT else None
+    
+    if checkpoint_path and os.path.isdir(checkpoint_path):
         services["ml_model"] = "ok"
-    else:
+    elif checkpoint_optional:
         services["ml_model"] = f"checkpoint not found at {checkpoint_path}"
         overall = "degraded"
+    else:
+        services["ml_model"] = f"not loaded (optional) — expected at {checkpoint_path}"
+        # Don't degrade overall status for optional checkpoint
+
 
     status_code = 200 if overall == "ok" else 503
     return JSONResponse(
