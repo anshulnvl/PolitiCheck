@@ -204,7 +204,7 @@ async def _source_reputation(domain: str) -> dict:
         )
     
     try:
-        conn = await asyncpg.connect(EXTERNAL_NEWS_DATABASE_URL)
+        conn = await asyncpg.connect(EXTERNAL_NEWS_DATABASE_URL, timeout=5)
         row = await conn.fetchrow(
             "SELECT newsguard_score, mbfc_rating, domain_age_days FROM source_reputation WHERE domain = $1",
             domain

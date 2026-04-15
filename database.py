@@ -7,6 +7,12 @@ DATABASE_URL = os.getenv(
     "postgresql://politicheck:secret@localhost:5432/politicheck"
 )
 
-engine = create_engine(DATABASE_URL)
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,     # Detect stale connections
+    pool_size=5,            # Keep 5 connections in pool
+    max_overflow=10,        # Allow 10 overflow connections max
+    pool_recycle=3600,      # Recycle connections after 1 hour
+)
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()

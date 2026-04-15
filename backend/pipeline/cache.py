@@ -13,10 +13,14 @@ caching rather than raising an exception.
 
 import hashlib
 import json
+import logging
 import os
+import threading
 from typing import Optional
 
 import redis
+
+log = logging.getLogger(__name__)
 
 REDIS_URL  = os.getenv("REDIS_URL", "redis://localhost:6379")
 CACHE_TTL  = int(os.getenv("PIPELINE_CACHE_TTL", 86_400))   # 24 h
@@ -24,16 +28,21 @@ _CACHE_DB  = 2
 _PREFIX    = "pipeline:"
 
 _client: Optional[redis.Redis] = None
+_client_lock = threading.Lock()  # Thread-safe lazy initialization
 
 
 def _get_client() -> redis.Redis:
+    """Get thread-safe Redis client singleton using double-checked locking."""
     global _client
     if _client is None:
-        _client = redis.Redis.from_url(
-            f"{REDIS_URL}/{_CACHE_DB}",
-            decode_responses=True,
-            socket_connect_timeout=2,
-        )
+        with _client_lock:
+            if _client is None:
+                _client = redis.Redis.from_url(
+                    f"{REDIS_URL}/{_CACHE_DB}",
+                    decode_responses=True,
+                    socket_connect_timeout=2,
+                    socket_timeout=2,
+                )
     return _client
 
 

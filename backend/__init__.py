@@ -9,6 +9,4 @@ Subpackages:
   - training: Model training and evaluation utilities
 """
 
-from .celery_app import celery_app
-
-__all__ = ["celery_app"]
+__all__ = []

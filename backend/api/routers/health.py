@@ -32,12 +32,25 @@ router = APIRouter(prefix="/api", tags=["health"])
 
 @router.get("/health", summary="Service health check")
 def health_check() -> JSONResponse:
+    """
+    Check health of all backend services.
+    
+    Returns 200 (ok) if all services are reachable, 503 (degraded) otherwise.
+    
+    Checks:
+      - Redis cache (for pipeline)
+      - PostgreSQL database
+      - ML model checkpoint (optional)
+    
+    Returns:
+      JSONResponse with status and per-service details
+    """
     services: dict[str, str] = {}
     overall = "ok"
 
     # ── Redis ─────────────────────────────────────────────────────────────────
     try:
-        r = redis.Redis.from_url(f"{REDIS_URL}/0", socket_connect_timeout=2, socket_timeout=2)
+        r = redis.Redis.from_url(f"{REDIS_URL}/0", socket_connect_timeout=1, socket_timeout=1)
         r.ping()
         services["redis"] = "ok"
     except Exception as exc:

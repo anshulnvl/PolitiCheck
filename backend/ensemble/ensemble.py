@@ -1,23 +1,31 @@
-import json, os
-import numpy  as np
+import json
+import os
+import threading
+import numpy as np
 import xgboost as xgb
 from .feature_builder import build_feature_row
-from .shap_explainer   import EnsembleExplainer
+from .shap_explainer import EnsembleExplainer
 
 DEFAULT_MODEL_PATH = os.path.join(
     os.path.dirname(__file__), "../../checkpoints/ensemble_xgb.json"
 )
 
+_instance_lock = threading.Lock()  # Thread-safe singleton access
+
+
 class Ensemble:
     """
-    Singleton-friendly ensemble wrapper.
+    Thread-safe singleton wrapper for XGBoost ensemble model.
+    
+    Uses double-checked locking pattern for lazy initialization.
+    Supports SHAP explanations for model interpretability.
 
     Usage:
         ensemble = Ensemble()                     # loads from default path
         result   = ensemble.predict(article_dict)
     """
 
-    _instance = None   # optional module-level singleton
+    _instance = None  # module-level singleton
 
     def __init__(self, model_path: str = DEFAULT_MODEL_PATH):
         meta_path = model_path.replace(".json", "_meta.json")
@@ -72,7 +80,17 @@ class Ensemble:
 
 
 def get_ensemble() -> Ensemble:
-    """Module-level lazy singleton — avoids reloading the model per request."""
+    """
+    Lazy-load singleton ensemble instance (thread-safe).
+    
+    Double-checked locking pattern ensures only one instance exists
+    even under concurrent access from multiple threads/tasks.
+    
+    Returns:
+        Ensemble: Cached singleton instance
+    """
     if Ensemble._instance is None:
-        Ensemble._instance = Ensemble()
+        with _instance_lock:
+            if Ensemble._instance is None:
+                Ensemble._instance = Ensemble()
     return Ensemble._instance
