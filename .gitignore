@@ -1,0 +1,11 @@
+**/raw/
+backend/training/merged_dataset.csv
+**/venv/
+**/checkpoints/
+**/.idea/
+**/.vscode/
+**/logs/
+**/venv/
+**/__pycache__/
+**/alembic/
+**/.env
