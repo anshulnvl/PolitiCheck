@@ -299,6 +299,10 @@
 
 <script>
 let currentMode = 'article';
+const defaultApiBase = window.location.protocol.startsWith('http')
+  ? window.location.origin
+  : 'http://localhost:8000';
+const API_BASE = (window.POLITICHECK_API_BASE || defaultApiBase).replace(/\/$/, '');
 
 document.querySelectorAll('.mode-tab').forEach(tab => {
   tab.addEventListener('click', () => {
@@ -345,7 +349,7 @@ async function analyze() {
   errorBox.classList.remove('visible');
 
   try {
-    const response = await fetch('http://localhost:8000/api/analyze', {
+    const response = await fetch(`${API_BASE}/api/analyze`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

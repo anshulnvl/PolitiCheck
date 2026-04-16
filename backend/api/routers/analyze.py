@@ -287,6 +287,25 @@ def _bias_explanation(bias_score: int, features: dict) -> str:
     )
 
 
+_FEATURE_LABELS = {
+    "ml_score":         "AI classifier",
+    "linguistic_score": "linguistic pattern analysis",
+    "external_score":   "external fact-checking",
+    "vader_compound":   "sentiment tone",
+    "vader_neg":        "negative sentiment",
+    "vader_pos":        "positive sentiment",
+    "caps_ratio":       "excessive capitalisation",
+    "exclaim_density":  "exclamation mark density",
+    "source_reputation":"source reputation",
+    "has_known_source": "known source",
+    "title_caps_ratio": "title capitalisation",
+    "title_exclaim":    "title punctuation",
+    "quote_count":      "use of quotations",
+    "word_count":       "article length",
+    "avg_sentence_len": "sentence length",
+}
+
+
 def _context(r: dict) -> str:
     doc        = r.get("document", {})
     title      = doc.get("title",      "")
@@ -302,8 +321,9 @@ def _context(r: dict) -> str:
     if word_count:
         parts.append(f"{word_count} words")
     if top_drivers:
-        top_feat = top_drivers[0].get("feature", "").replace("_", " ")
-        parts.append(f"primary driver: {top_feat}")
+        raw_feat  = top_drivers[0].get("feature", "")
+        human     = _FEATURE_LABELS.get(raw_feat, raw_feat.replace("_", " "))
+        parts.append(f"primary driver: {human}")
 
     return ("Analysis context: " + ", ".join(parts) + ".") if parts else "No contextual metadata available."
 
@@ -314,13 +334,16 @@ def _missing(r: dict) -> str:
 
     gaps = []
     if not ext_features.get("google_fc_claims_found"):
-        gaps.append("no fact-check database matches found")
+        gaps.append(
+            "this article has not been reviewed by any indexed fact-checking organisation "
+            "(PolitiFact, Snopes, AFP, etc.) — absence of a fact-check does not imply the content is false"
+        )
     if not doc.get("source"):
-        gaps.append("source domain could not be identified")
+        gaps.append("source domain could not be identified, so publisher reputation was not assessed")
     if not doc.get("title"):
         gaps.append("article title unavailable")
     if ext_features.get("reputation_source") == "unknown":
-        gaps.append("source reputation unknown")
+        gaps.append("publisher reputation data is unavailable for this domain")
 
     return ("Verification gaps: " + "; ".join(gaps) + ".") if gaps else "All primary verification sources were consulted."
 

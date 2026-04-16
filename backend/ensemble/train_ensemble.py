@@ -1,13 +1,13 @@
 """
 Run from project root:
-    python3 -m backend.ensemble.train_ensemble \  
+    python3 -m backend.ensemble.train_ensemble \
         --data backend/combined30k.jsonl \
         --out  backend/checkpoints/ensemble_xgb.json
 """
 import argparse, json, os
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
-import numpy  as np
+import numpy as np
 import pandas as pd
 import xgboost as xgb
 from sklearn.model_selection import train_test_split
@@ -17,11 +17,60 @@ from sklearn.metrics import (
 from .feature_builder import build_feature_row
 
 from tqdm import tqdm
+from multiprocessing import cpu_count
+import platform
 
 def _feature_cache_path(data_path: str, offline: bool) -> Path:
     data_file = Path(data_path)
     suffix = ".offline.features.jsonl" if offline else ".features.jsonl"
     return data_file.with_suffix(suffix)
+
+
+def _has_gpu() -> bool:
+    """Detect Metal Performance Shaders (MPS) on Apple Silicon or CUDA on other platforms."""
+    try:
+        import torch
+        if platform.system() == "Darwin":
+            return torch.backends.mps.is_available()
+        else:
+            return torch.cuda.is_available()
+    except ImportError:
+        return False
+
+
+def _get_device() -> str:
+    """Return an XGBoost-supported device string."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return "cuda"
+    except ImportError:
+        pass
+    return "cpu"
+
+
+def _get_optimal_workers() -> int:
+    """Get optimal worker count for M2 Pro or other systems."""
+    cpu_cores = cpu_count()
+    if platform.system() == "Darwin":
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["sysctl", "-n", "hw.perflevel0.physicalcpu"],
+                capture_output=True,
+                text=True,
+                timeout=2
+            )
+            if result.returncode == 0:
+                perf_cores = int(result.stdout.strip())
+                max_workers = perf_cores -2
+            else:
+                max_workers = max(1, cpu_cores - 4)
+        except Exception:
+            max_workers = max(1, cpu_cores - 4)
+    else:
+        max_workers = max(1, cpu_cores - 4)
+    return max_workers
 
 
 def _build_feature_row_from_json(line: str, offline: bool) -> dict:
@@ -31,33 +80,47 @@ def _build_feature_row_from_json(line: str, offline: bool) -> dict:
     return feats
 
 
+_OFFLINE_FLAG = True
+
+
+def _build_feature_worker(line: str) -> dict:
+    """Module-level wrapper for ProcessPoolExecutor (must be pickleable)."""
+    return _build_feature_row_from_json(line, offline=_OFFLINE_FLAG)
+
+
 def load_or_build_features(
     data_path: str,
     workers: int | None = None,
     offline: bool = True,
 ) -> pd.DataFrame:
+    global _OFFLINE_FLAG
     cache_path = _feature_cache_path(data_path, offline=offline)
 
     if cache_path.exists() and cache_path.stat().st_mtime >= Path(data_path).stat().st_mtime:
         print(f"Loading cached features from {cache_path}...")
-        return pd.read_json(cache_path, lines=True)
+        return pd.read_json(cache_path, lines=True, dtype={col: "float32" for col in [c for c in pd.read_json(cache_path, lines=True, nrows=1).columns if c != "label"]})
 
     print("Building features (first run only)...")
     with open(data_path) as f:
         lines = f.readlines()
 
-    worker_count = 1 if workers is None else max(1, workers)
+    if workers is not None:
+        worker_count = max(1, workers)
+    else:
+        worker_count = _get_optimal_workers()
+    
     if worker_count == 1:
         records = [
             _build_feature_row_from_json(line, offline=offline)
             for line in tqdm(lines, desc="Building features")
         ]
     else:
-        print(f"  Using {worker_count} workers")
-        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        print(f"  Using {worker_count} workers (ProcessPoolExecutor for GIL bypass)")
+        _OFFLINE_FLAG = offline
+        with ProcessPoolExecutor(max_workers=worker_count) as executor:
             records = list(
                 tqdm(
-                    executor.map(lambda line: _build_feature_row_from_json(line, offline=offline), lines),
+                    executor.map(_build_feature_worker, lines, chunksize=max(1, len(lines) // (worker_count * 4))),
                     total=len(lines),
                     desc="Building features",
                 )
@@ -84,7 +147,10 @@ def train(data_path: str, out_path: str, workers: int | None = None, offline: bo
         X, y, test_size=0.2, random_state=42, stratify=y
     )
 
-    print("[2/4] Training XGBoost (this takes ~1-2 min on CPU)...")
+    device = _get_device()
+    device_str = "CUDA" if device == "cuda" else "CPU"
+    print(f"[2/4] Training XGBoost on {device_str} (optimized for Apple Silicon)...")
+    
     model = xgb.XGBClassifier(
         n_estimators=300,
         max_depth=5,
@@ -95,7 +161,11 @@ def train(data_path: str, out_path: str, workers: int | None = None, offline: bo
         eval_metric="logloss",
         early_stopping_rounds=20,
         random_state=42,
-        tree_method="hist",       # fast even on CPU
+        tree_method="hist",
+        device=device,
+        max_bin=256,
+        n_jobs=-1,
+        verbosity=1,
     )
     model.fit(
         X_train, y_train,
@@ -113,7 +183,6 @@ def train(data_path: str, out_path: str, workers: int | None = None, offline: bo
     print(f"[4/4] Saving model → {out_path}")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     model.save_model(out_path)
-    # Also save feature column order — critical for consistent inference
     meta_path = out_path.replace(".json", "_meta.json")
     with open(meta_path, "w") as f:
         json.dump({"feature_cols": FEATURE_COLS}, f, indent=2)

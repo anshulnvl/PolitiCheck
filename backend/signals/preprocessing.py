@@ -6,7 +6,12 @@ from dataclasses import dataclass, field
 from typing import Optional
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
-from newspaper import Article
+
+try:
+    from newspaper import Article
+except Exception:
+    # newspaper3k may be unavailable if optional lxml html-clean extras are missing.
+    Article = None
 
 
 @dataclass
@@ -35,27 +40,28 @@ def process(input_text: str) -> PreprocessedDocument:
 # ─── URL path ─────────────────────────────────────────────────────────────────
 
 def _process_url(url: str) -> PreprocessedDocument:
-    domain = urlparse(url).netloc.replace("www.", "")
+    domain = urlparse(url).netloc.replace("www.", "").lower()
 
     # 1. Try newspaper3k first (handles most news sites)
-    try:
-        article = Article(url)
-        article.download()
-        article.parse()
+    if Article is not None:
+        try:
+            article = Article(url)
+            article.download()
+            article.parse()
 
-        title = article.title or ""
-        body  = article.text or ""
-        author = ", ".join(article.authors) if article.authors else ""
-        pub_date = str(article.publish_date.date()) if article.publish_date else None
+            title = article.title or ""
+            body  = article.text or ""
+            author = ", ".join(article.authors) if article.authors else ""
+            pub_date = str(article.publish_date.date()) if article.publish_date else None
 
-        # If newspaper got almost nothing, fall back to BS4
-        if len(body.strip()) < 200:
-            raise ValueError("newspaper3k returned insufficient content")
+            # If newspaper got almost nothing, fall back to BS4
+            if len(body.strip()) < 200:
+                raise ValueError("newspaper3k returned insufficient content")
 
-        return _build_doc(title, body, author, pub_date, domain)
+            return _build_doc(title, body, author, pub_date, domain)
 
-    except Exception:
-        pass   # fall through to BeautifulSoup scrape
+        except Exception:
+            pass   # fall through to BeautifulSoup scrape
 
     # 2. Fallback: raw requests + BeautifulSoup
     try:

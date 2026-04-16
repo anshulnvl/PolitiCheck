@@ -3,13 +3,11 @@ import re
 import httpx
 import asyncpg
 import whois
-import spacy
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Dict, Any, Optional
 import logging
-
-nlp = spacy.load("en_core_web_sm")
+from functools import lru_cache
 
 log = logging.getLogger(__name__)
 
@@ -24,6 +22,7 @@ if not EXTERNAL_NEWS_DATABASE_URL:
     )
 
 GOOGLE_FC_URL = "https://factchecktools.googleapis.com/v1alpha1/claims:search"
+USE_SPACY_CLAIM_SCORER = os.getenv("EXTERNAL_USE_SPACY", "false").lower() == "true"
 
 _LOCAL_SOURCE_REPUTATION = {
     "reuters.com": 0.95,
@@ -50,10 +49,27 @@ async def compute(text: str, source_domain: str = "", offline: bool = False) -> 
         claimbuster_result = _local_checkworthy_score(text)
         reputation_result = _local_source_reputation(source_domain)
     else:
-        # Run all three checks, collect results
-        google_result = await _google_factcheck(text)
-        claimbuster_result = _local_checkworthy_score(text)
-        reputation_result = await _source_reputation(source_domain)
+        # Run all three checks, but isolate failures so one source never breaks the whole task.
+        try:
+            google_result = await _google_factcheck(text)
+        except Exception as e:
+            google_result = {"google_fc_error": str(e), "google_fc_claims_found": 0, "google_fc_verdicts": []}
+
+        try:
+            claimbuster_result = _local_checkworthy_score(text)
+        except Exception as e:
+            claimbuster_result = {
+                "claimbuster_error": str(e),
+                "claimbuster_max_score": 0,
+                "claimbuster_avg_score": 0,
+                "claimbuster_sentence_scores": [],
+                "claimbuster_source": "fallback_error",
+            }
+
+        try:
+            reputation_result = await _source_reputation(source_domain)
+        except Exception as e:
+            reputation_result = {"reputation_score": 0.5, "reputation_error": str(e), "reputation_source": "error_fallback"}
 
     features.update(google_result)
     features.update(claimbuster_result)
@@ -140,42 +156,65 @@ def _local_checkworthy_score(text: str) -> dict:
     Mimics ClaimBuster: scores sentences for 'check-worthiness'
     based on presence of named entities, numbers, and strong claims.
     """
-    doc = nlp(text[:5000])
-    sentences = list(doc.sents)
-    scores = []
+    raw_sentences = _split_sentences(text[:5000])
+    claim_verbs = {
+        "said", "claim", "claims", "claimed", "prove", "show", "shows", "confirm",
+        "deny", "announce", "announced", "reveal", "revealed", "state", "stated", "allege", "alleged",
+    }
 
-    for sent in sentences:
+    sentence_scores = []
+    spacy_nlp = _get_nlp() if USE_SPACY_CLAIM_SCORER else None
+
+    for sentence in raw_sentences:
         s = 0.0
-        tokens = [t for t in sent if not t.is_space]
+        tokens = [tok for tok in re.split(r"\s+", sentence) if tok]
         if not tokens:
             continue
 
-        # Has named entities (person, org, place) → check-worthy
-        ents = [e for e in sent.ents if e.label_ in ("PERSON", "ORG", "GPE", "EVENT")]
+        if spacy_nlp is not None:
+            doc = spacy_nlp(sentence)
+            ents = [e for e in doc.ents if e.label_ in ("PERSON", "ORG", "GPE", "EVENT")]
+            nums = [t for t in doc if t.like_num or t.text.endswith('%')]
+            has_claim_verb = any(t.lemma_.lower() in claim_verbs for t in doc)
+        else:
+            # Fallback heuristics avoid heavy NLP libs in worker processes.
+            ents = re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b", sentence)
+            nums = re.findall(r"\b\d+(?:[\.,]\d+)?%?\b", sentence)
+            has_claim_verb = bool(re.search(r"\b(" + "|".join(claim_verbs) + r")\b", sentence, flags=re.IGNORECASE))
+
         s += min(len(ents) * 0.2, 0.4)
-
-        # Has numbers or percentages → factual claim
-        nums = [t for t in sent if t.like_num or t.text.endswith('%')]
         s += min(len(nums) * 0.15, 0.3)
-
-        # Has strong assertion verbs → claim being made
-        claim_verbs = {"said", "claim", "prove", "show", "confirm",
-                       "deny", "announce", "reveal", "state", "allege"}
-        if any(t.lemma_.lower() in claim_verbs for t in sent):
+        if has_claim_verb:
             s += 0.2
 
-        # Penalize very short sentences (not real claims)
         if len(tokens) < 5:
             s *= 0.3
 
-        scores.append(min(s, 1.0))
+        sentence_scores.append({"sentence": sentence, "score": round(min(s, 1.0), 4)})
+
+    numeric_scores = [item["score"] for item in sentence_scores]
 
     return {
-        "claimbuster_max_score": max(scores) if scores else 0,
-        "claimbuster_avg_score": round(sum(scores)/len(scores), 4) if scores else 0,
-        "claimbuster_sentence_scores": scores,
-        "claimbuster_source": "local_heuristic"
+        "claimbuster_max_score": max(numeric_scores) if numeric_scores else 0,
+        "claimbuster_avg_score": round(sum(numeric_scores) / len(numeric_scores), 4) if numeric_scores else 0,
+        "claimbuster_sentence_scores": sentence_scores,
+        "claimbuster_source": "spacy" if spacy_nlp is not None else "local_heuristic",
     }
+
+
+@lru_cache(maxsize=1)
+def _get_nlp():
+    try:
+        import spacy
+        return spacy.load("en_core_web_sm")
+    except Exception as exc:
+        log.warning("spaCy claim scorer unavailable, using heuristic fallback: %s", exc)
+        return None
+
+
+def _split_sentences(text: str) -> list[str]:
+    parts = re.split(r"(?<=[.!?])\s+", text)
+    return [p.strip() for p in parts if p and p.strip()]
 
 
 def _local_source_reputation(domain: str) -> dict:
@@ -197,11 +236,11 @@ async def _source_reputation(domain: str) -> dict:
 
     # 1. Try PostgreSQL cache first
     if not EXTERNAL_NEWS_DATABASE_URL:
-        return ExternalSignalResult(
-            score=0.5,
-            features={"fact_check_available": False},
-            error="External news database not configured"
-        )
+        return {
+            "reputation_score": 0.5,
+            "fact_check_available": False,
+            "reputation_source": "db_not_configured",
+        }
     
     try:
         conn = await asyncpg.connect(EXTERNAL_NEWS_DATABASE_URL, timeout=5)
@@ -222,7 +261,11 @@ async def _source_reputation(domain: str) -> dict:
         creation = w.creation_date
         if isinstance(creation, list):
             creation = creation[0]
-        age_days = (datetime.now(timezone.utc) - creation.replace(tzinfo=timezone.utc)).days if creation else 0
+        if creation and hasattr(creation, "tzinfo"):
+            creation_dt = creation if creation.tzinfo else creation.replace(tzinfo=timezone.utc)
+            age_days = (datetime.now(timezone.utc) - creation_dt).days
+        else:
+            age_days = 0
         rep_score = max(0.0, 1.0 - (age_days / 3650))  # older → more trusted
         return {
             "reputation_score": round(rep_score, 4),

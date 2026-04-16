@@ -17,7 +17,7 @@ So:  score = 1.0 - P(label == 1)
 
 import os
 import threading
-import torch
+import platform
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Dict, Any, Optional
@@ -46,9 +46,44 @@ _device    = None
 _load_lock = threading.Lock()
 
 
+def _select_device():
+    """
+    Device policy for inference.
+
+    Env override:
+      ML_DEVICE=cpu|cuda|mps|auto
+
+    Default behavior:
+      - macOS: cpu (fork-safe with Celery workers)
+      - others: auto (cuda -> cpu)
+    """
+    import torch
+
+    requested = os.getenv("ML_DEVICE")
+    if requested:
+        requested = requested.strip().lower()
+    else:
+        requested = "cpu" if platform.system() == "Darwin" else "auto"
+
+    if requested == "cpu":
+        return torch.device("cpu")
+    if requested == "cuda":
+        return torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    if requested == "mps":
+        return torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
+
+    # auto
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available() and platform.system() != "Darwin":
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
 def _load_model():
     """Load tokenizer + model once; reuse on subsequent calls."""
     global _tokenizer, _model, _device
+    import torch
 
     if _model is not None:
         return  # already loaded
@@ -70,13 +105,7 @@ def _load_model():
         _model     = AutoModelForSequenceClassification.from_pretrained(checkpoint)
         _model.eval()
 
-        # Device selection: MPS → CUDA → CPU
-        if torch.backends.mps.is_available():
-            _device = torch.device("mps")
-        elif torch.cuda.is_available():
-            _device = torch.device("cuda")
-        else:
-            _device = torch.device("cpu")
+        _device = _select_device()
 
         _model = _model.to(_device)
 
@@ -118,6 +147,7 @@ def compute(text: str) -> MLSignalResult:
         return MLSignalResult(score=0.5, error=str(exc))
 
     try:
+        import torch
         inputs = _tokenizer(
             text,
             truncation=True,

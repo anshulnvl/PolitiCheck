@@ -23,8 +23,8 @@ import sqlalchemy
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-from pipeline.cache import REDIS_URL
-from pipeline.db import engine
+from backend.pipeline.cache import REDIS_URL
+from backend.pipeline.db import engine
 from backend.signals.ml_signal import CHECKPOINT
 
 router = APIRouter(prefix="/api", tags=["health"])

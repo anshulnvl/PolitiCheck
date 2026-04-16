@@ -136,7 +136,7 @@ def ensemble_task(
         elif prob <= 0.35: verdict = "FAKE"
         else:              verdict = "UNCERTAIN"
 
-        explanation = ens.explainer.explain(features)
+        explanation = ens.explain(features)
 
         return {
             "credibility_score": round(prob, 4),
